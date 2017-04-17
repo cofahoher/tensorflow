@@ -130,6 +130,8 @@ Try the following commands at the `tfdbg>` prompt (referencing the code at
 | `lo -r hidden/Relu:0` | List the recipients of the output of the node `hidden/Relu`, recursively—i.e., the output recipient tree. |
 | `lt -n softmax.*` | List all dumped tensors whose names match the regular-expression pattern `softmax.*`. |
 | `lt -t MatMul` | List all dumped tensors whose node type is `MatMul`. |
+| `ls` | List all Python source files responsible for constructing the nodes (and tensors) in the current graph. |
+| `ls -n softmax.*` | List Python source files responsible for constructing the nodes whose names match the pattern `softmax.*`. |
 | `ps /path/to/source.py` | Print the Python source file source.py, with the lines annotated with the ops created at each of them, respectively. |
 | `ps -t /path/to/source.py` | Same as the command above, but perform annotation using dumped Tensors, instead of ops. |
 | `ps -b 30 /path/to/source.py` | Annotate source.py beginning at line 30. |
@@ -418,8 +420,9 @@ that the graph contains, this kind of disk space issue can happen.
 There are three possible workarounds or solutions:
 
 1. The constructors of `LocalCLIDebugWrapperSession` and `LocalCLIDebugHook`
-   provide a keyword argument, `dump_root`, with which you can specify the path 
+   provide a keyword argument, `dump_root`, with which you can specify the path
    to which **tfdbg** dumps the debug data. For example:
+
    ``` python
    # For LocalCLIDebugWrapperSession
    sess = tf_debug.LocalCLIDebugWrapperSession(dump_root="/with/lots/of/space")
@@ -432,6 +435,7 @@ There are three possible workarounds or solutions:
 2. Reduce the batch size used during the runs.
 3. Use the filtering options of **tfdbg**'s `run` command to watch only specific
    nodes in the graph. For example:
+
    ```
    tfdbg> run --node_name_filter .*hidden.*
    tfdbg> run --op_type_filter Variable.*

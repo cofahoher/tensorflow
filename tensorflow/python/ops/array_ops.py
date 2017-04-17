@@ -196,7 +196,7 @@ def broadcast_dynamic_shape(shape_x, shape_y):
 
   Args:
     shape_x: A rank 1 integer `Tensor`, representing the shape of x.
-    shape_y: A rank 1 integer `Tensor`, representing the shape of x.
+    shape_y: A rank 1 integer `Tensor`, representing the shape of y.
   Returns:
     A rank 1 integer `Tensor` representing the broadcasted shape.
   """
@@ -1292,6 +1292,17 @@ def matrix_transpose(a, name="matrix_transpose"):
   # tf.matrix_transpose(x) is shape [1, 2, 4, 3]
   ```
 
+  Note that `tf.matmul` provides kwargs allowing for transpose of arguments.
+  This is done with minimal cost, and is preferable to using this function. E.g.
+
+  ```
+  # Good!  Transpose is taken at minimal additional cost.
+  tf.matmul(matrix, b, transpose_b=True)
+
+  # Inefficient!
+  tf.matmul(matrix, tf.matrix_transpose(b))
+  ```
+
   Args:
     a: A `Tensor` with `rank >= 2`.
     name: A name for the operation (optional).
@@ -1498,17 +1509,7 @@ def placeholder(dtype, shape=None, name=None):
     A `Tensor` that may be used as a handle for feeding a value, but not
     evaluated directly.
   """
-  shape = tensor_shape.as_shape(shape)
-  if shape.is_fully_defined():
-    dim_list = shape.as_list()
-  else:
-    dim_list = []
-  ret = gen_array_ops._placeholder(
-      dtype=dtype,
-      shape=dim_list,
-      name=name)
-  ret.set_shape(shape)
-  return ret
+  return gen_array_ops._placeholder(dtype=dtype, shape=shape, name=name)
 
 
 # pylint: disable=redefined-outer-name

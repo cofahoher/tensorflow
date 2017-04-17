@@ -272,6 +272,7 @@ cc_library(
         "lib/monitoring/sampler.h",
         "lib/random/distribution_sampler.h",
         "lib/random/philox_random.h",
+        "lib/random/random_distributions.h",
         "lib/random/simple_philox.h",
         "lib/strings/numbers.h",
         "lib/strings/str_util.h",
@@ -383,6 +384,7 @@ tf_cuda_library(
         "util/bcast.h",
         "util/cuda_kernel_helper.h",
         "util/device_name_utils.h",
+        "util/env_var.h",
         "util/events_writer.h",
         "util/example_proto_fast_parsing.h",
         "util/example_proto_helper.h",
@@ -494,7 +496,6 @@ cc_library(
 tf_gen_op_libs(
     op_lib_names = [
         "array_ops",
-        "audio_ops",
         "candidate_sampling_ops",
         "control_flow_ops",
         "ctc_ops",
@@ -522,6 +523,13 @@ tf_gen_op_libs(
         "string_ops",
         "training_ops",
     ],
+)
+
+tf_gen_op_libs(
+    op_lib_names = [
+        "audio_ops",
+    ],
+    deps = [":lib"],
 )
 
 cc_library(
@@ -686,6 +694,7 @@ cc_library(
     visibility = ["//visibility:public"],
     deps = [
         "//tensorflow/core/kernels:array",
+        "//tensorflow/core/kernels:audio",
         "//tensorflow/core/kernels:bincount_op",
         "//tensorflow/core/kernels:candidate_sampler_ops",
         "//tensorflow/core/kernels:control_flow_ops",
@@ -721,8 +730,12 @@ cc_library(
         "//tensorflow/core/kernels:quantized_ops",
     ]) + if_mkl([
         "//tensorflow/core/kernels:mkl_conv_op",
-        "//tensorflow/core/kernels:mkl_matmul_op",
+        "//tensorflow/core/kernels:mkl_pooling_ops",
+        "//tensorflow/core/kernels:mkl_relu_op",
         "//tensorflow/core/kernels:mkl_tfconv_op",
+        "//tensorflow/core/kernels:mkl_fused_batch_norm_op",
+        "//tensorflow/core/kernels:mkl_lrn_op",
+        "//tensorflow/core/kernels:mkl_concat_op",
     ]),
 )
 
@@ -1534,7 +1547,10 @@ cc_library(
 tf_cuda_library(
     name = "direct_session_internal",
     srcs = ["common_runtime/direct_session.cc"],
-    hdrs = ["common_runtime/direct_session.h"],
+    hdrs = [
+        "common_runtime/direct_session.h",
+        "util/env_var.h",
+    ],
     copts = tf_copts(),
     cuda_deps = [
         ":gpu_tracer",
@@ -2072,7 +2088,6 @@ tf_cc_test_mkl(
     size = "small",
     srcs = [
         "graph/mkl_layout_pass_test.cc",
-        "graph/mkl_optimizer_merge_test.cc",
         "graph/mkl_tfconversion_pass_test.cc",
     ],
     linkstatic = tf_kernel_tests_linkstatic(),
@@ -2093,8 +2108,12 @@ tf_cc_test_mkl(
         "//tensorflow/cc:cc_ops",
         "//tensorflow/cc:scope",
         "//tensorflow/cc:sendrecv_ops",
+        "//tensorflow/core/kernels:mkl_concat_op",
         "//tensorflow/core/kernels:mkl_conv_op",
-        "//tensorflow/core/kernels:mkl_matmul_op",
+        "//tensorflow/core/kernels:mkl_fused_batch_norm_op",
+        "//tensorflow/core/kernels:mkl_lrn_op",
+        "//tensorflow/core/kernels:mkl_pooling_ops",
+        "//tensorflow/core/kernels:mkl_relu_op",
         "//tensorflow/core/kernels:mkl_tfconv_op",
         "//tensorflow/core/kernels:ops_util",
         "//third_party/eigen3",
