@@ -130,8 +130,12 @@ def piecewise_constant(x, boundaries, values, name=None):
 
   Raises:
     ValueError: if types of `x` and `boundaries` do not match, or types of all
-        `values` do not match.
+        `values` do not match or
+        the number of elements in the lists does not match.
   """
+  if len(boundaries) != len(values) - 1:
+    raise ValueError(
+        "The length of boundaries should be 1 less than the length of values")
   with ops.name_scope(name, "PiecewiseConstant",
                       [x, boundaries, values, name]) as name:
     x = ops.convert_to_tensor(x)
@@ -158,7 +162,6 @@ def piecewise_constant(x, boundaries, values, name=None):
         raise ValueError(
             "Values must have elements all with the same dtype (%s vs %s)." % (
                 values[0].dtype.base_dtype, v.dtype.base_dtype))
-
     pred_fn_pairs = {}
     pred_fn_pairs[x <= boundaries[0]] = lambda: values[0]
     pred_fn_pairs[x > boundaries[-1]] = lambda: values[-1]
@@ -260,8 +263,12 @@ def polynomial_decay(learning_rate, global_step, decay_steps,
     power = math_ops.cast(power, dtype)
     if cycle:
       # Find the first multiple of decay_steps that is bigger than global_step.
-      decay_steps = math_ops.multiply(decay_steps,
-                                      math_ops.ceil(global_step / decay_steps))
+      # If global_step is zero set the multiplier to 1
+      multiplier = control_flow_ops.cond(math_ops.equal(global_step, 0),
+                                         lambda: 1.0,
+                                         lambda: math_ops.ceil(
+                                             global_step / decay_steps))
+      decay_steps = math_ops.multiply(decay_steps, multiplier)
     else:
       # Make sure that the global_step used is not bigger than decay_steps.
       global_step = math_ops.minimum(global_step, decay_steps)

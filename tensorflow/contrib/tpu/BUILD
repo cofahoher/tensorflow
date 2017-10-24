@@ -13,6 +13,7 @@ load("//tensorflow:tensorflow.bzl", "tf_py_test")
 
 package(
     default_visibility = [
+        "//cloud/vmm/testing/tests/tpu:__subpackages__",
         "//learning/brain:__subpackages__",
         "//tensorflow:__subpackages__",
     ],
@@ -34,6 +35,7 @@ py_library(
     srcs = [
         "python/tpu/tpu_config.py",
         "python/tpu/tpu_estimator.py",
+        "python/tpu/util.py",
     ],
     srcs_version = "PY2AND3",
     deps = [

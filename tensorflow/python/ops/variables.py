@@ -213,9 +213,13 @@ class Variable(object):
           constraint=constraint)
 
   def __repr__(self):
-    return "<tf.Variable '%s' shape=%s dtype=%s>" % (self.name,
-                                                     self.get_shape(),
-                                                     self.dtype.name)
+    if context.in_eager_mode():
+      return "<tf.Variable '%s' shape=%s dtype=%s, numpy=%s>" % (
+          self.name, self.get_shape(), self.dtype.name,
+          ops.numpy_text(self.read_value(), is_repr=True))
+    else:
+      return "<tf.Variable '%s' shape=%s dtype=%s>" % (
+          self.name, self.get_shape(), self.dtype.name)
 
   def _init_from_args(self,
                       initial_value=None,
@@ -390,7 +394,8 @@ class Variable(object):
                                import_scope=import_scope))
     if variable_def.HasField("save_slice_info_def"):
       self._save_slice_info = Variable.SaveSliceInfo(
-          save_slice_info_def=variable_def.save_slice_info_def)
+          save_slice_info_def=variable_def.save_slice_info_def,
+          import_scope=import_scope)
     else:
       self._save_slice_info = None
     self._caching_device = None
@@ -1396,6 +1401,8 @@ def global_variables_initializer():
   Returns:
     An Op that initializes global variables in the graph.
   """
+  if context.in_eager_mode():
+    return control_flow_ops.no_op(name="global_variables_initializer")
   return variables_initializer(global_variables())
 
 

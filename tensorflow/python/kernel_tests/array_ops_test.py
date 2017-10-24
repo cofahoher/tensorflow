@@ -51,6 +51,15 @@ class BatchMatrixTransposeTest(test_util.TensorFlowTestCase):
       self.assertEqual((3, 2), transposed.get_shape())
       self.assertAllEqual(expected_transposed, transposed.eval())
 
+  def testConjugate(self):
+    m = [[1 + 1j, 2 + 2j, 3 + 3j], [4 + 4j, 5 + 5j, 6 + 6j]]
+    expected_transposed = [[1 - 1j, 4 - 4j], [2 - 2j, 5 - 5j], [3 - 3j, 6 - 6j]]
+    with self.test_session():
+      matrix = ops.convert_to_tensor(m)
+      transposed = array_ops.matrix_transpose(matrix, conjugate=True)
+      self.assertEqual((3, 2), transposed.get_shape())
+      self.assertAllEqual(expected_transposed, transposed.eval())
+
   def testBatchMatrix(self):
     matrix_0 = [[1, 2, 3], [4, 5, 6]]
     matrix_0_t = [[1, 4], [2, 5], [3, 6]]
@@ -940,12 +949,10 @@ class SequenceMaskTest(test_util.TensorFlowTestCase):
 
   def testExceptions(self):
     with self.test_session():
-      with self.assertRaisesRegexp(ValueError, "lengths must be 1D"):
-        array_ops.sequence_mask([[10, 20]], [10, 20])
       with self.assertRaisesRegexp(ValueError, "maxlen must be scalar"):
         array_ops.sequence_mask([10, 20], [10, 20])
 
-  def testNormal(self):
+  def testOneDimensional(self):
     with self.test_session():
       res = array_ops.sequence_mask(constant_op.constant([1, 3, 2]), 5)
       self.assertAllEqual(res.get_shape(), [3, 5])
@@ -960,6 +967,25 @@ class SequenceMaskTest(test_util.TensorFlowTestCase):
       self.assertAllEqual(res.eval(), [[0.0, 0.0, 0.0,
                                         0.0], [1.0, 0.0, 0.0, 0.0],
                                        [1.0, 1.0, 1.0, 1.0]])
+
+  def testTwoDimensional(self):
+    with self.test_session():
+      res = array_ops.sequence_mask(constant_op.constant([[1, 3, 2]]), 5)
+      self.assertAllEqual(res.get_shape(), [1, 3, 5])
+      self.assertAllEqual(res.eval(), [[[True, False, False, False, False],
+                                        [True, True, True, False, False],
+                                        [True, True, False, False, False]]])
+
+      # test dtype and default maxlen:
+      res = array_ops.sequence_mask(
+          constant_op.constant([[0, 1, 4], [1, 2, 3]]), dtype=dtypes.float32)
+      self.assertAllEqual(res.get_shape().as_list(), [2, 3, None])
+      self.assertAllEqual(res.eval(), [[[0.0, 0.0, 0.0, 0.0],
+                                        [1.0, 0.0, 0.0, 0.0],
+                                        [1.0, 1.0, 1.0, 1.0]],
+                                       [[1.0, 0.0, 0.0, 0.0],
+                                        [1.0, 1.0, 0.0, 0.0],
+                                        [1.0, 1.0, 1.0, 0.0]]])
 
   def testDtypes(self):
 

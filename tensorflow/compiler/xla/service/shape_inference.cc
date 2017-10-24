@@ -57,10 +57,12 @@ UnaryOperation OpcodeToUnaryOperation(HloOpcode opcode) {
       return UNOP_IS_FINITE;
     case HloOpcode::kLog:
       return UNOP_LOG;
-    case HloOpcode::kLogicalNot:
-      return UNOP_LOGICAL_NOT;
+    case HloOpcode::kNot:
+      return UNOP_NOT;
     case HloOpcode::kNegate:
       return UNOP_NEGATE;
+    case HloOpcode::kRoundNearestAfz:
+      return UNOP_ROUND_NEAREST_AFZ;
     case HloOpcode::kSign:
       return UNOP_SIGN;
     case HloOpcode::kSin:
@@ -70,7 +72,8 @@ UnaryOperation OpcodeToUnaryOperation(HloOpcode opcode) {
     case HloOpcode::kTanh:
       return UNOP_TANH;
     default:
-      LOG(FATAL) << "unhandled opcode " << opcode;
+      LOG(FATAL) << "Unhandled opcode for conversion to unary operation: "
+                 << opcode;
   }
 }
 
@@ -110,10 +113,16 @@ BinaryOperation OpcodeToBinaryOperation(HloOpcode opcode) {
       return BINOP_POW;
     case HloOpcode::kRemainder:
       return BINOP_REM;
-    case HloOpcode::kLogicalOr:
-      return BINOP_LOGICAL_OR;
-    case HloOpcode::kLogicalAnd:
-      return BINOP_LOGICAL_AND;
+    case HloOpcode::kOr:
+      return BINOP_OR;
+    case HloOpcode::kAnd:
+      return BINOP_AND;
+    case HloOpcode::kShiftLeft:
+      return BINOP_SHIFT_LEFT;
+    case HloOpcode::kShiftRightArithmetic:
+      return BINOP_SHIFT_RIGHT_ARITHMETIC;
+    case HloOpcode::kShiftRightLogical:
+      return BINOP_SHIFT_RIGHT_LOGICAL;
     default:
       LOG(FATAL) << "unhandled opcode " << opcode;
   }
@@ -313,16 +322,18 @@ StatusOr<Shape> InferWindowOutputShape(const Shape& base_shape,
       }
       return arg;
     case UNOP_ABS:
-    case UNOP_SIGN:
     case UNOP_NEGATE:
+    case UNOP_ROUND_NEAREST_AFZ:
+    case UNOP_SIGN:
     case UNOP_SORT:
       return arg;
 
-    case UNOP_LOGICAL_NOT:
-      if (arg.element_type() != PRED) {
+    case UNOP_NOT:
+      if (arg.element_type() != PRED &&
+          !primitive_util::IsIntegralType(arg.element_type())) {
         return InvalidArgument(
-            "expected pred element type in argument to logical-not operation; "
-            "got %s",
+            "expected pred or an integral element type in argument to not "
+            "operation; got %s",
             PrimitiveType_Name(arg.element_type()).c_str());
       }
       return arg;
@@ -337,8 +348,9 @@ StatusOr<Shape> InferWindowOutputShape(const Shape& base_shape,
       return ShapeUtil::ChangeElementType(arg, PRED);
 
     default:
-      return InvalidArgument("unknown operation %s",
-                             UnaryOperation_Name(operation).c_str());
+      return InvalidArgument(
+          "Unknown operation for unary shape inference: \"%s\".",
+          UnaryOperation_Name(operation).c_str());
   }
 }
 
@@ -452,7 +464,10 @@ StatusOr<Shape> InferWindowOutputShape(const Shape& base_shape,
   }
   if (ShapeUtil::Rank(operand_shape) != padding_config.dimensions_size()) {
     return InvalidArgument(
-        "the rank of the operand and the padding configuration do not match.");
+        "The rank of the operand and the padding configuration do not match: "
+        "%s vs %s",
+        ShapeUtil::HumanString(operand_shape).c_str(),
+        padding_config.ShortDebugString().c_str());
   }
   if (operand_shape.element_type() != padding_value_shape.element_type()) {
     return InvalidArgument(
@@ -674,11 +689,15 @@ ShapeInference::InferDegenerateDimensionBroadcastShape(
         ShapeUtil::HumanString(rhs).c_str());
   }
 
-  if (ShapeUtil::Rank(lhs) == ShapeUtil::Rank(rhs) &&
-      !broadcast_dimensions.empty()) {
-    return InvalidArgument(
-        "broadcast dimensions field should not be set on binary "
-        "operations with operands of the same rank");
+  if (ShapeUtil::Rank(lhs) == ShapeUtil::Rank(rhs)) {
+    std::vector<int64> identity_dims(ShapeUtil::Rank(lhs));
+    std::iota(identity_dims.begin(), identity_dims.end(), 0);
+    if (!broadcast_dimensions.empty() &&
+        broadcast_dimensions != identity_dims) {
+      return InvalidArgument(
+          "broadcast dimensions field must either be not set or be the "
+          "identity on binary operations with operands of the same rank");
+    }
   }
 
   if (ShapeUtil::Compatible(lhs, rhs)) {
@@ -738,20 +757,23 @@ ShapeInference::InferDegenerateDimensionBroadcastShape(
     case BINOP_DIV:
     case BINOP_REM:
     case BINOP_MUL:
+    case BINOP_SHIFT_LEFT:
+    case BINOP_SHIFT_RIGHT_ARITHMETIC:
+    case BINOP_SHIFT_RIGHT_LOGICAL:
       return InferElementwiseBinaryOpShape(operation, lhs, rhs,
                                            broadcast_dimensions);
 
-    case BINOP_LOGICAL_AND:
-    case BINOP_LOGICAL_OR:
-      if (lhs.element_type() != PRED) {
+    case BINOP_AND:
+    case BINOP_OR:
+      if (lhs.element_type() != PRED &&
+          !primitive_util::IsIntegralType(lhs.element_type())) {
         return InvalidArgument(
-            "expected pred element type in argument to logical and/or "
-            "operation; got %s",
+            "expected pred or integral type in argument to and/or operation; "
+            "got %s",
             PrimitiveType_Name(lhs.element_type()).c_str());
       }
       return InferElementwiseBinaryOpShape(operation, lhs, rhs,
                                            broadcast_dimensions);
-
     case BINOP_EQ:
     case BINOP_GE:
     case BINOP_GT:
@@ -847,7 +869,8 @@ ShapeInference::InferDegenerateDimensionBroadcastShape(
 
 /* static */ StatusOr<Shape> ShapeInference::InferMapShape(
     tensorflow::gtl::ArraySlice<const Shape*> arg_shapes,
-    const ProgramShape& to_apply) {
+    const ProgramShape& to_apply,
+    tensorflow::gtl::ArraySlice<int64> dimensions) {
   if (arg_shapes.empty()) {
     return InvalidArgument("Map expects at least one argument");
   }
@@ -881,6 +904,24 @@ ShapeInference::InferDegenerateDimensionBroadcastShape(
         "Map operation requires all operands to have the same shape; got: "
         "%s",
         tensorflow::str_util::Join(pieces, ", ").c_str());
+  }
+
+  // Check that dimensions.size == arg_shape.dimensions_size() (we currently
+  // only support mapping across all dimensions: i.e. scalar map functions).
+  if (dimensions.size() != arg_shape->dimensions_size()) {
+    return InvalidArgument(
+        "Map applied to a subset of dimensions currently not supported: "
+        "arg_dimension_size: %d, requested_map_dimensions_size: %zu",
+        arg_shape->dimensions_size(), dimensions.size());
+  }
+
+  // Check that requested map dimensions numbers are monotonically increasing.
+  for (int i = 0; i < dimensions.size(); ++i) {
+    if (dimensions[i] != i) {
+      return InvalidArgument(
+          "Map requires monotonically increasing dimension numbers, found: %s ",
+          tensorflow::str_util::Join(dimensions, ", ").c_str());
+    }
   }
 
   // The applied function's arity equals the number of arguments.
@@ -924,8 +965,8 @@ ShapeInference::InferDegenerateDimensionBroadcastShape(
 }
 
 /* static */ StatusOr<Shape> ShapeInference::InferBatchNormTrainingShape(
-    const Shape& operand_shape, const Shape& offset_shape,
-    const Shape& scale_shape, int64 feature_index) {
+    const Shape& operand_shape, const Shape& scale_shape,
+    const Shape& offset_shape, int64 feature_index) {
   TF_RETURN_IF_ERROR(
       ExpectNotTupleOrOpaque(operand_shape, "operand of batch norm training"));
   TF_RETURN_IF_ERROR(ExpectNotTupleOrOpaque(
@@ -1027,8 +1068,8 @@ ShapeInference::InferDegenerateDimensionBroadcastShape(
 }
 
 /* static */ StatusOr<Shape> ShapeInference::InferBatchNormInferenceShape(
-    const Shape& operand_shape, const Shape& offset_shape,
-    const Shape& scale_shape, const Shape& mean_shape,
+    const Shape& operand_shape, const Shape& scale_shape,
+    const Shape& offset_shape, const Shape& mean_shape,
     const Shape& variance_shape, int64 feature_index) {
   TF_RETURN_IF_ERROR(
       ExpectNotTupleOrOpaque(operand_shape, "operand of batch norm inference"));
@@ -1344,14 +1385,8 @@ ShapeInference::InferDegenerateDimensionBroadcastShape(
         "Window: %s",
         window.DebugString().c_str());
   }
-  int num_spatial_dims = dnums.spatial_dimensions_size();
-  if (num_spatial_dims < 1) {
-    return InvalidArgument(
-        "Convolution requires at least one spatial dimension.\n"
-        "Window: %s",
-        window.DebugString().c_str());
-  }
 
+  const int num_spatial_dims = dnums.spatial_dimensions_size();
   if (window.dimensions_size() != num_spatial_dims) {
     return InvalidArgument(
         "Window must have same number of dimensions as dimension numbers.\n"
@@ -1359,7 +1394,7 @@ ShapeInference::InferDegenerateDimensionBroadcastShape(
         window.DebugString().c_str(), dnums.DebugString().c_str());
   }
 
-  int num_dims = num_spatial_dims + 2;
+  const int num_dims = num_spatial_dims + 2;
   if (ShapeUtil::Rank(lhs) != num_dims) {
     return InvalidArgument(
         "The LHS argument to a convolution should have rank %d.\n"
@@ -1378,8 +1413,8 @@ ShapeInference::InferDegenerateDimensionBroadcastShape(
   // Verifies that the input and window dimensions are a permutation of
   // the dimension numbers.
   std::vector<int64> input_dnums(num_dims);
-  input_dnums[0] = dnums.batch_dimension();
-  input_dnums[1] = dnums.feature_dimension();
+  input_dnums[0] = dnums.input_batch_dimension();
+  input_dnums[1] = dnums.input_feature_dimension();
   std::copy(dnums.spatial_dimensions().begin(),
             dnums.spatial_dimensions().end(), input_dnums.begin() + 2);
   std::sort(input_dnums.begin(), input_dnums.end());
@@ -1419,8 +1454,8 @@ ShapeInference::InferDegenerateDimensionBroadcastShape(
   for (int i = 0; i < num_spatial_dims; ++i) {
     input_spatial_dims[i] = lhs.dimensions(dnums.spatial_dimensions(i));
   }
-  const int64 input_features = lhs.dimensions(dnums.feature_dimension());
-  const int64 input_batch = lhs.dimensions(dnums.batch_dimension());
+  const int64 input_features = lhs.dimensions(dnums.input_feature_dimension());
+  const int64 input_batch = lhs.dimensions(dnums.input_batch_dimension());
 
   std::vector<int64> kernel_spatial_dims(num_spatial_dims);
   for (int i = 0; i < num_spatial_dims; ++i) {
@@ -1462,8 +1497,8 @@ ShapeInference::InferDegenerateDimensionBroadcastShape(
                              /*allow_negative_padding=*/true));
 
   std::vector<int64> dimensions(num_dims);
-  dimensions[dnums.batch_dimension()] = input_batch;
-  dimensions[dnums.feature_dimension()] = kernel_output_features;
+  dimensions[dnums.output_batch_dimension()] = input_batch;
+  dimensions[dnums.output_feature_dimension()] = kernel_output_features;
   for (int i = 0; i < num_spatial_dims; ++i) {
     dimensions[dnums.spatial_dimensions(i)] = window_output_shape.dimensions(i);
   }
@@ -1816,14 +1851,18 @@ ShapeInference::InferDegenerateDimensionBroadcastShape(
                            body.parameters_size());
   }
 
-  string shape_string = tensorflow::strings::Printf(
-      "condition: %s; body: %s; init: %s", condition.ShortDebugString().c_str(),
-      body.ShortDebugString().c_str(), init.ShortDebugString().c_str());
+  auto shape_string = [&]() {
+    return tensorflow::strings::Printf(
+        "condition: %s; body: %s; init: %s",
+        ShapeUtil::HumanString(condition).c_str(),
+        ShapeUtil::HumanString(body).c_str(),
+        ShapeUtil::HumanString(init).c_str());
+  };
 
   // Check the shapes of computation parameters and return types.
   if (!ShapeUtil::ShapeIs(condition.result(), PRED, {})) {
     return InvalidArgument("condition must return a boolean; got %s",
-                           shape_string.c_str());
+                           shape_string().c_str());
   }
   if (!ShapeUtil::Compatible(body.result(), condition.parameters(0)) ||
       !ShapeUtil::Compatible(body.result(), body.parameters(0)) ||
@@ -1831,7 +1870,7 @@ ShapeInference::InferDegenerateDimensionBroadcastShape(
     return InvalidArgument(
         "the parameter of condition and body, the result of the body, and init "
         "must all have the same shape; got %s",
-        shape_string.c_str());
+        shape_string().c_str());
   }
 
   return init;
@@ -1862,11 +1901,16 @@ ShapeInference::InferDegenerateDimensionBroadcastShape(
 
   Shape inferred_shape =
       ShapeUtil::MakeShape(operand.element_type(), new_sizes);
+  VLOG(3) << "Reshape inferred shape: "
+          << ShapeUtil::HumanString(inferred_shape);
 
   if (ShapeUtil::ElementsIn(operand) != ShapeUtil::ElementsIn(inferred_shape)) {
     return InvalidArgument(
-        "reshape operation has mismatched element counts: from=%lld to=%lld",
-        ShapeUtil::ElementsIn(operand), ShapeUtil::ElementsIn(inferred_shape));
+        "reshape operation has mismatched element counts: from=%lld (%s) "
+        "to=%lld (%s)",
+        ShapeUtil::ElementsIn(operand), ShapeUtil::HumanString(operand).c_str(),
+        ShapeUtil::ElementsIn(inferred_shape),
+        ShapeUtil::HumanString(inferred_shape).c_str());
   }
 
   std::vector<int64> indices(ShapeUtil::Rank(operand));

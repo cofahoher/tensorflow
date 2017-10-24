@@ -64,7 +64,6 @@ so you can activate tfdbg CLI with the `--debug` flag at the command line.
 from tensorflow.python import debug as tf_debug
 
 sess = tf_debug.LocalCLIDebugWrapperSession(sess)
-sess.add_tensor_filter("has_inf_or_nan", tf_debug.has_inf_or_nan)
 ```
 
 This wrapper has the same interface as Session, so enabling debugging requires
@@ -142,7 +141,8 @@ Try the following commands at the `tfdbg>` prompt (referencing the code at
 | **`lt`** | | **List dumped tensors.** | `lt` |
 | | `-n <name_pattern>` | List dumped tensors with names matching given regular-expression pattern. | `lt -n Softmax.*` |
 | | `-t <op_pattern>` | List dumped tensors with op types matching given regular-expression pattern. | `lt -t MatMul` |
-| | `s <sort_key>` | Sort the output by given `sort_key`, whose possible values are `timestamp` (default), `dump_size`, `op_type` and `tensor_name`. | `lt -s dump_size` |
+| | `-f <filter_name>` | List only the tensors that pass a registered tensor filter. | `lt -f has_inf_or_nan` |
+| | `-s <sort_key>` | Sort the output by given `sort_key`, whose possible values are `timestamp` (default), `dump_size`, `op_type` and `tensor_name`. | `lt -s dump_size` |
 | | `-r` | Sort in reverse order. | `lt -r -s dump_size` |
 | **`pt`** | | **Print value of a dumped tensor.** | |
 | | `pt <tensor>` | Print tensor value. | `pt hidden/Relu:0` |
@@ -187,6 +187,9 @@ Try the following commands at the `tfdbg>` prompt (referencing the code at
 | | `--tensor_dtype_filter <pattern>` | Execute the next `Session.run`, dumping only Tensors with data types (`dtype`s) matching the given regular-expression pattern. | `run --tensor_dtype_filter int.*` |
 | | `-p` | Execute the next `Session.run` call in profiling mode. | `run -p` |
 | **`ri`** | | **Display information about the run the current run, including fetches and feeds.** | `ri` |
+| **`config`** | | **Set or show persistent TFDBG UI configuration.** | |
+| | `set` | Set the value of a config item: {`graph_recursion_depth`, `mouse_mode`}. | `config set graph_recursion_depth 3` |
+| | `show` | Show current persistent UI configuration. | `config show` |
 | **`help`** | | **Print general help information** | `help` |
 | | `help <command>` | Print help for given command. | `help lt` |
 
@@ -246,13 +249,18 @@ some procedural-language debuggers:
 tfdbg> run -f has_inf_or_nan
 ```
 
-> NOTE: The preceding command works properly because we have registered a filter
-> for `nan`s and `inf`s called `has_inf_or_nan` (as explained previously).
+> NOTE: The preceding command works properly because a tensor filter called
+> `has_inf_or_nan` has been registered for you when the wrapped session is
+> created. This filter detects `nan`s and `inf`s (as explained previously).
 > If you have registered any other filters, you can
 > use "run -f" to have tfdbg run until any tensor triggers that filter (cause
 > the filter to return True).
 >
 > ``` python
+> def my_filter_callable(datum, tensor):
+>   # A filter that detects zero-valued scalars.
+>   return len(tensor.shape) == 0 and tensor == 0.0
+>
 > sess.add_tensor_filter('my_filter', my_filter_callable)
 > ```
 >

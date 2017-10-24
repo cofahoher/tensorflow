@@ -367,18 +367,18 @@ Status HloCostAnalysis::HandleReshape(HloInstruction* reshape) {
 }
 
 Status HloCostAnalysis::HandleBatchNormTraining(
-    HloInstruction* batchNormTraining) {
+    HloInstruction* batch_norm_training) {
   // TODO(b/62294698): Implement cost analysis for batch-norm-training.
   return Status::OK();
 }
 
 Status HloCostAnalysis::HandleBatchNormInference(
-    HloInstruction* batchNormInference) {
+    HloInstruction* batch_norm_inference) {
   // TODO(b/62294698): Implement cost analysis for batch-norm-inference.
   return Status::OK();
 }
 
-Status HloCostAnalysis::HandleBatchNormGrad(HloInstruction* batchNormGrad) {
+Status HloCostAnalysis::HandleBatchNormGrad(HloInstruction* batch_norm_grad) {
   // TODO(b/62294698): Implement cost analysis for batch-norm-grad.
   return Status::OK();
 }
@@ -393,12 +393,14 @@ Status HloCostAnalysis::HandleConvolution(HloInstruction* convolution,
                                           const Window& window) {
   const auto& dnums = convolution->convolution_dimension_numbers();
   const int64 output_features =
-      convolution->shape().dimensions(dnums.feature_dimension());
+      convolution->shape().dimensions(dnums.output_feature_dimension());
 
   // For each output element, we do one fma per element in the kernel at some
   // given output feature index.
   const int64 fmas_per_output_element =
-      ShapeUtil::ElementsIn(rhs_instruction->shape()) / output_features;
+      output_features > 0
+          ? ShapeUtil::ElementsIn(rhs_instruction->shape()) / output_features
+          : 0;
   const int64 output_elements = ShapeUtil::ElementsIn(convolution->shape());
   current_properties_[kFlopsKey] =
       output_elements * fmas_per_output_element * kFmaFlops;

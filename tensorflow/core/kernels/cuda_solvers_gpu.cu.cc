@@ -29,24 +29,6 @@ namespace functor {
 
 typedef Eigen::GpuDevice GPUDevice;
 
-// TODO(rmlarsen): Add a faster custom kernel similar to
-// SwapDimension1And2InTensor3 in tensorflow/core/kernels/conv_ops_gpu_3.cu.cc
-template <typename Scalar>
-struct AdjointBatchFunctor<GPUDevice, Scalar> {
-  void operator()(const GPUDevice& device,
-                  typename TTypes<Scalar, 3>::ConstTensor input,
-                  typename TTypes<Scalar, 3>::Tensor output) {
-    const Eigen::array<int, 3> perm({0, 2, 1});
-    To32Bit(output).device(device) = To32Bit(input).shuffle(perm).conjugate();
-  }
-};
-
-// Instantiate implementations for the 4 numeric types.
-template struct AdjointBatchFunctor<GPUDevice, float>;
-template struct AdjointBatchFunctor<GPUDevice, double>;
-template struct AdjointBatchFunctor<GPUDevice, std::complex<float>>;
-template struct AdjointBatchFunctor<GPUDevice, std::complex<double>>;
-
 namespace {
 
 // Hacks around missing support for complex arithmetic in nvcc.
@@ -173,7 +155,7 @@ __global__ void DeterminantFromPivotedLUKernel(int nthreads, int n,
 template <typename Scalar>
 struct DeterminantFromPivotedLUFunctor<GPUDevice, Scalar> {
   void operator()(const GPUDevice& device,
-                  typename TTypes<Scalar, 3>::Tensor lu_factor,
+                  typename TTypes<Scalar, 3>::ConstTensor lu_factor,
                   const int* pivots, typename TTypes<Scalar, 1>::Tensor output,
                   int* info) {
     using CudaType = typename CUDAComplexT<Scalar>::type;
@@ -190,19 +172,16 @@ struct DeterminantFromPivotedLUFunctor<GPUDevice, Scalar> {
   }
 };
 
-// Instantiate implementations for the 4 numeric types.
 template struct DeterminantFromPivotedLUFunctor<GPUDevice, float>;
 template struct DeterminantFromPivotedLUFunctor<GPUDevice, double>;
-template struct DeterminantFromPivotedLUFunctor<GPUDevice, std::complex<float>>;
-template struct DeterminantFromPivotedLUFunctor<GPUDevice,
-                                                std::complex<double>>;
+template struct DeterminantFromPivotedLUFunctor<GPUDevice, complex64>;
+template struct DeterminantFromPivotedLUFunctor<GPUDevice, complex128>;
 
 template <typename Scalar>
 __global__ void EyeKernel(Cuda3DLaunchConfig config, int batch_size, int m,
                           int n, Scalar* matrix_batch_ptr) {
   const int matrix_size = m * n;
   const Scalar one = Const<Scalar>::make_const(1.0);
-  const Scalar zero = Const<Scalar>::make_const(0.0);
   CUDA_AXIS_KERNEL_LOOP(batch, config.virtual_thread_count, x) {
     if (batch >= batch_size) {
       break;
@@ -216,7 +195,7 @@ __global__ void EyeKernel(Cuda3DLaunchConfig config, int batch_size, int m,
         if (col >= n) {
           break;
         }
-        matrix_batch_ptr[row_start + col] = row == col ? one : zero;
+        matrix_batch_ptr[row_start + col] = row == col ? one : Scalar();
       }
     }
   }
@@ -239,11 +218,10 @@ struct EyeFunctor<GPUDevice, Scalar> {
   }
 };
 
-// Instantiate implementations for the 4 numeric types.
 template struct EyeFunctor<GPUDevice, float>;
 template struct EyeFunctor<GPUDevice, double>;
-template struct EyeFunctor<GPUDevice, std::complex<float>>;
-template struct EyeFunctor<GPUDevice, std::complex<double>>;
+template struct EyeFunctor<GPUDevice, complex64>;
+template struct EyeFunctor<GPUDevice, complex128>;
 
 }  // namespace functor
 }  // namespace tensorflow

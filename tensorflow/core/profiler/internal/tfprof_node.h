@@ -38,9 +38,51 @@ namespace tensorflow {
 namespace tfprof {
 std::vector<int64> ShapeProtoToVec(const TensorShapeProto& shape_pb);
 
-TensorShapeProto VecToShapeProto(const std::vector<int64> shape_vec);
+TensorShapeProto VecToShapeProto(const std::vector<int64>& shape_vec);
 
 class TFGraphNode;
+
+class CallStack {
+ public:
+  class Trace {
+   public:
+    Trace(const CodeDef::Trace* trace,
+          const std::map<int64, string>* id_to_string)
+        : trace_(trace), id_to_string_(id_to_string) {}
+
+    const int32 lineno() const { return trace_->lineno(); }
+    string file() const {
+      // Backward compatible with old proto files.
+      if (!trace_->file().empty()) return trace_->file();
+      return id_to_string_->at(trace_->file_id());
+    }
+    string function() const {
+      // Backward compatible with old proto files.
+      if (!trace_->function().empty()) return trace_->function();
+      return id_to_string_->at(trace_->function_id());
+    }
+    int32 func_start_line() const { return trace_->func_start_line(); }
+
+   private:
+    const CodeDef::Trace* trace_;
+    const std::map<int64, string>* id_to_string_;
+  };
+
+  CallStack(const CodeDef& def, const std::map<int64, string>* id_to_string)
+      : def_(def) {
+    traces_.reserve(def.traces_size());
+    for (const auto& t : def_.traces()) {
+      traces_.emplace_back(&t, id_to_string);
+    }
+  }
+
+  const CodeDef& code_def() const { return def_; }
+  const std::vector<Trace>& traces() const { return traces_; }
+
+ private:
+  std::vector<Trace> traces_;
+  CodeDef def_;
+};
 
 class ExecStep {
  public:
@@ -175,28 +217,29 @@ class ExecStep {
   std::map<int32, std::pair<int64, uint64>> output_memory_;
 };
 
-#define GRAPH_NODE_BYTES(type)                                \
-  do {                                                        \
-    if (execs_.empty()) {                                     \
-      return 0;                                               \
-    }                                                         \
-    if (step >= 0) {                                          \
-      auto exec = execs_.find(step);                          \
-      CHECK(exec != execs_.end()) << "unknown step " << step; \
-      return exec->second.type##_bytes();                     \
-    }                                                         \
-                                                              \
-    int64 bytes = 0;                                          \
-    for (const auto& exec : execs_) {                         \
-      bytes += exec.second.type##_bytes();                    \
-    }                                                         \
-    return bytes / execs_.size();                             \
+#define GRAPH_NODE_BYTES(type)             \
+  do {                                     \
+    if (execs_.empty()) {                  \
+      return 0;                            \
+    }                                      \
+    if (step >= 0) {                       \
+      auto exec = execs_.find(step);       \
+      if (exec == execs_.end()) return 0;  \
+      return exec->second.type##_bytes();  \
+    }                                      \
+                                           \
+    int64 bytes = 0;                       \
+    for (const auto& exec : execs_) {      \
+      bytes += exec.second.type##_bytes(); \
+    }                                      \
+    return bytes / execs_.size();          \
   } while (0)
 
 class TFGraphNode {
  public:
-  TFGraphNode(const ProfileNode& node, const ProfileProto& profile) {
-    FromProto(node, profile);
+  TFGraphNode(const ProfileNode& node, const ProfileProto& profile,
+              const std::map<int64, string>* id_to_string) {
+    FromProto(node, profile, id_to_string);
   }
 
   TFGraphNode(const NodeDef* node, int64 id) {
@@ -247,7 +290,12 @@ class TFGraphNode {
   void AddFloatOps(int64 float_ops) { node_.set_float_ops(float_ops); }
 
   // TODO(xpan): This could take a lot of memory.
-  void AddCode(const CodeDef& code) { node_.mutable_trace()->MergeFrom(code); }
+  void AddCode(const CodeDef& code,
+               const std::map<int64, string>* id_to_string) {
+    if (!call_stack_) {
+      call_stack_.reset(new CallStack(code, id_to_string));
+    }
+  }
 
   const string& name() const { return node_.name(); }
   int64 id() const { return node_.id(); }
@@ -311,12 +359,20 @@ class TFGraphNode {
       int64 id = nodes_map.at(s.first)->id();
       (*node_.mutable_src_output_index())[id] = s.second;
     }
+
+    if (call_stack_) {
+      node_.clear_trace();
+      node_.mutable_trace()->MergeFrom(call_stack_->code_def());
+    }
     return node_;
   }
 
-  void FromProto(const ProfileNode& node, const ProfileProto& profile) {
+  void FromProto(const ProfileNode& node, const ProfileProto& profile,
+                 const std::map<int64, string>* id_to_string) {
     node_.Clear();
     node_.MergeFrom(node);
+
+    call_stack_.reset(new CallStack(node.trace(), id_to_string));
 
     op_types_.clear();
     op_types_.insert(node_.op_types().begin(), node_.op_types().end());
@@ -372,7 +428,9 @@ class TFGraphNode {
     }
     if (step >= 0) {
       auto exec = execs_.find(step);
-      CHECK(exec != execs_.end());
+      if (exec == execs_.end()) {
+        return 0;
+      }
       return exec->second.run_count();
     }
     int64 total_run_count = 0;
@@ -390,7 +448,9 @@ class TFGraphNode {
     }
     if (step >= 0) {
       auto exec = execs_.find(step);
-      CHECK(exec != execs_.end());
+      if (exec == execs_.end()) {
+        return 0;
+      }
       return exec->second.exec_micros();
     }
 
@@ -410,7 +470,9 @@ class TFGraphNode {
     }
     if (step >= 0) {
       auto exec = execs_.find(step);
-      CHECK(exec != execs_.end());
+      if (exec == execs_.end()) {
+        return 0;
+      }
       return exec->second.accelerator_exec_micros();
     }
 
@@ -430,7 +492,9 @@ class TFGraphNode {
     }
     if (step >= 0) {
       auto exec = execs_.find(step);
-      CHECK(exec != execs_.end());
+      if (exec == execs_.end()) {
+        return 0;
+      }
       return exec->second.cpu_exec_micros();
     }
 
@@ -448,20 +512,26 @@ class TFGraphNode {
 
   int64 all_start_micros(int64 step) const {
     auto exec = execs_.find(step);
-    CHECK(exec != execs_.end()) << "unknown step " << step;
+    if (exec == execs_.end()) {
+      return 0;
+    }
     return exec->second.all_start_micros();
   }
 
   int64 latest_end_micros(int64 step) const {
     auto exec = execs_.find(step);
-    CHECK(exec != execs_.end()) << "unknown step " << step;
+    if (exec == execs_.end()) {
+      return 0;
+    }
     return exec->second.latest_end_micros();
   }
 
   const std::map<string, std::vector<std::pair<int64, int64>>>& op_execs(
       int64 step) const {
     auto exec = execs_.find(step);
-    CHECK(exec != execs_.end()) << "unknown step " << step;
+    if (exec == execs_.end()) {
+      return empty_op_execs_;
+    }
     return exec->second.op_execs();
   }
 
@@ -469,33 +539,45 @@ class TFGraphNode {
 
   int64 accelerator_temp_bytes(int64 step) const {
     auto exec = execs_.find(step);
-    CHECK(exec != execs_.end()) << "unknown step " << step;
+    if (exec == execs_.end()) {
+      return 0;
+    }
     return exec->second.accelerator_temp_bytes();
   }
   int64 host_temp_bytes(int64 step) const {
     auto exec = execs_.find(step);
-    CHECK(exec != execs_.end()) << "unknown step " << step;
+    if (exec == execs_.end()) {
+      return 0;
+    }
     return exec->second.host_temp_bytes();
   }
   int64 accelerator_persistent_bytes(int64 step) const {
     auto exec = execs_.find(step);
-    CHECK(exec != execs_.end()) << "unknown step " << step;
+    if (exec == execs_.end()) {
+      return 0;
+    }
     return exec->second.accelerator_persistent_bytes();
   }
   int64 host_persistent_bytes(int64 step) const {
     auto exec = execs_.find(step);
-    CHECK(exec != execs_.end()) << "unknown step " << step;
+    if (exec == execs_.end()) {
+      return 0;
+    }
     return exec->second.host_persistent_bytes();
   }
   const std::map<int32, std::pair<int64, uint64>>& output_memory(
       int64 step) const {
     auto exec = execs_.find(step);
-    CHECK(exec != execs_.end()) << "unknown step " << step;
+    if (exec == execs_.end()) {
+      return empty_output_memory_;
+    }
     return exec->second.output_memory();
   }
   int64 allocator_bytes_in_use(int64 step) const {
     auto exec = execs_.find(step);
-    CHECK(exec != execs_.end()) << "unknown step " << step;
+    if (exec == execs_.end()) {
+      return 0;
+    }
     return exec->second.allocator_bytes_in_use();
   }
 
@@ -528,7 +610,7 @@ class TFGraphNode {
     // Otherwise, return dynamic float_ops.
     return node_.float_ops() * run_count(step);
   }
-  const CodeDef& code() { return node_.trace(); }
+  const CallStack* call_stack() { return call_stack_.get(); }
   string canonical_device() const { return node_.canonical_device(); }
   string host_device() const { return node_.host_device(); }
   const std::set<string>& op_types() const { return op_types_; }
@@ -556,6 +638,8 @@ class TFGraphNode {
 
   ProfileNode node_;
 
+  std::unique_ptr<CallStack> call_stack_;
+
   std::vector<int64> shape_;
   // Won't missing input_idx. But some shapes might be empty (unknown).
   std::map<int, std::vector<int64>> input_shapes_;
@@ -566,6 +650,9 @@ class TFGraphNode {
   std::set<string> op_types_;
 
   std::map<int64, ExecStep> execs_;
+
+  std::map<int32, std::pair<int64, uint64>> empty_output_memory_;
+  std::map<string, std::vector<std::pair<int64, int64>>> empty_op_execs_;
 };
 
 class TFMultiGraphNode {

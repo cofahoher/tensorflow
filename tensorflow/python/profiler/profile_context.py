@@ -20,6 +20,7 @@ from __future__ import print_function
 
 import contextlib
 import os
+import threading
 
 from tensorflow.core.protobuf import config_pb2
 from tensorflow.python import pywrap_tensorflow as print_mdl
@@ -46,56 +47,53 @@ def _profiled_run(self,
   """Overwrites the session.run()."""
   # pylint: disable=protected-access
   # Count the session steps.
-  with self.profile_context._new_step():
+  with self.profile_context._new_step() as step:
     # Fast path if no need for profiling.
-    if self.profile_context._is_fast_path():
-      return self._profiler_run_internal(
-          fetches, feed_dict, options, run_metadata)
+    if not self.profile_context._is_fast_path():
+      # Maybe trace this step.
+      if self.profile_context._should_trace():
+        # Enable tracing, perform auto profiling or auto dump.
+        if not run_metadata:
+          run_metadata = config_pb2.RunMetadata()
 
-    step = self.profile_context._step
+        if not options:
+          options = config_pb2.RunOptions(
+              trace_level=config_pb2.RunOptions.FULL_TRACE)
+          old_trace_level = options.trace_level
+        else:
+          old_trace_level = options.trace_level
+          options.trace_level = config_pb2.RunOptions.FULL_TRACE
 
-    # Maybe trace this step.
-    if self.profile_context._should_trace():
-      # Enable tracing, perform auto profiling or auto dump.
-      if not run_metadata:
-        run_metadata = config_pb2.RunMetadata()
+        ret = self._profiler_run_internal(
+            fetches, feed_dict, options, run_metadata)
 
-      if not options:
-        options = config_pb2.RunOptions(
-            trace_level=config_pb2.RunOptions.FULL_TRACE)
-        old_trace_level = options.trace_level
+        self.profile_context.profiler._graph = self.graph
+        self.profile_context.profiler.add_step(step, run_metadata)
+        options.trace_level = old_trace_level
       else:
-        old_trace_level = options.trace_level
-        options.trace_level = config_pb2.RunOptions.FULL_TRACE
+        ret = self._profiler_run_internal(fetches, feed_dict, options)
 
-      ret = self._profiler_run_internal(
-          fetches, feed_dict, options, run_metadata)
+      # Maybe dump profile.
+      self.profile_context._maybe_dump()
 
-      self.profile_context.profiler._graph = self.graph
-      self.profile_context.profiler.add_step(step, run_metadata)
-      options.trace_level = old_trace_level
-    else:
-      ret = self._profiler_run_internal(fetches, feed_dict, options)
-
-    # Maybe dump profile.
-    self.profile_context._maybe_dump()
-
-    # Maybe profile:
-    to_profiles = self.profile_context._profile_candidates()
-    for to_prof in to_profiles:
-      cmd, opts, _ = to_prof
-      if cmd == 'graph':
-        self.profile_context.profiler.profile_graph(opts)
-      elif cmd == 'scope':
-        self.profile_context.profiler.profile_name_scope(opts)
-      elif cmd == 'op':
-        self.profile_context.profiler.profile_operations(opts)
-      elif cmd == 'code':
-        self.profile_context.profiler.profile_python(opts)
-      else:
-        raise ValueError('Unknown cmd: %s\n' % cmd)
-
-    return ret
+      # Maybe profile:
+      to_profiles = self.profile_context._profile_candidates()
+      for to_prof in to_profiles:
+        cmd, opts, _ = to_prof
+        if cmd == 'graph':
+          self.profile_context.profiler.profile_graph(opts)
+        elif cmd == 'scope':
+          self.profile_context.profiler.profile_name_scope(opts)
+        elif cmd == 'op':
+          self.profile_context.profiler.profile_operations(opts)
+        elif cmd == 'code':
+          self.profile_context.profiler.profile_python(opts)
+        else:
+          raise ValueError('Unknown cmd: %s\n' % cmd)
+      return ret
+  # Fast no lock path.
+  return self._profiler_run_internal(
+      fetches, feed_dict, options, run_metadata)
   # pylint: enable=protected-access
 
 
@@ -103,12 +101,12 @@ class ProfileContext(object):
   """A Context that captures RunMetadata and performs profiling.
 
   ```python
-    # Trace steps 10~20, profile at [15, 18, 20] and dump profile at 20.
+    # Trace steps 100~200, profile at [150, 200] and dump profile at 200.
     with tf.contrib.tfprof.ProfileContext('/tmp/train_dir',
-                                          trace_steps=range(10, 20),
-                                          dump_steps=[20]) as pctx:
+                                          trace_steps=range(100, 200, 3),
+                                          dump_steps=[200]) as pctx:
       opts = tf.profiler.ProfileOptionBuilder.time_and_memory()
-      pctx.add_auto_profiling('op', opts, [15, 18, 20])
+      pctx.add_auto_profiling('op', opts, [150, 200])
       train_loop().
 
     # Tracing only.
@@ -144,7 +142,7 @@ class ProfileContext(object):
     self._profiler_dir = profile_dir
 
     if trace_steps is None:
-      self._trace_steps = set(list(range(10, 50, 3)) +
+      self._trace_steps = set(list(range(10, 100, 3)) +
                               list(range(100, 10000, 1000)))
     else:
       if len(trace_steps) > MAX_TRACED_STEPS:
@@ -152,7 +150,7 @@ class ProfileContext(object):
       self._trace_steps = set(trace_steps[:])
 
     if dump_steps is None:
-      self._dump_steps = set([50] + list(range(100, 10000, 2000)))
+      self._dump_steps = set([100] + list(range(100, 10000, 2000)))
     else:
       self._dump_steps = set(dump_steps[:])
 
@@ -163,6 +161,7 @@ class ProfileContext(object):
     self._traced_steps = 0
     self._auto_profiles = []
     self._profiler = None
+    self._lock = threading.Lock()
 
   def add_auto_profiling(self, cmd, options, profile_steps):
     """Traces and profiles at some session run steps.
@@ -219,10 +218,11 @@ class ProfileContext(object):
 
   @contextlib.contextmanager
   def _new_step(self):
-    yield
-    self._step += 1
-    self._trace_next_step = False
-    self._dump_next_step = False
+    with self._lock:
+      yield self._step
+      self._step += 1
+      self._trace_next_step = False
+      self._dump_next_step = False
 
   def _profile_candidates(self):
     to_profile = []

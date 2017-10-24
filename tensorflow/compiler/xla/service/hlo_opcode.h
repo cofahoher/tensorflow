@@ -18,6 +18,7 @@ limitations under the License.
 
 #include <iosfwd>
 #include <string>
+#include "tensorflow/compiler/xla/statusor.h"
 #include "tensorflow/compiler/xla/types.h"
 
 namespace xla {
@@ -30,9 +31,9 @@ namespace xla {
 enum class HloOpcode {
   kAbs,
   kAdd,
-  kBatchNormTraining,
-  kBatchNormInference,
   kBatchNormGrad,
+  kBatchNormInference,
+  kBatchNormTraining,
   kBitcast,
   kBroadcast,
   kCall,
@@ -62,9 +63,9 @@ enum class HloOpcode {
   kIsFinite,
   kLe,
   kLog,
-  kLogicalAnd,
-  kLogicalNot,
-  kLogicalOr,
+  kAnd,
+  kNot,
+  kOr,
   kLt,
   kMap,
   kMaximum,
@@ -84,9 +85,13 @@ enum class HloOpcode {
   kReshape,
   kReverse,
   kRng,
+  kRoundNearestAfz,
   kSelect,
   kSelectAndScatter,
   kSend,
+  kShiftLeft,
+  kShiftRightArithmetic,
+  kShiftRightLogical,
   kSign,
   kSin,
   kSlice,
@@ -102,6 +107,9 @@ enum class HloOpcode {
 
 // Returns a string representation of the opcode.
 string HloOpcodeString(HloOpcode opcode);
+
+// Returns a string representation of the opcode.
+StatusOr<HloOpcode> StringToHloOpcode(const string& opcode_name);
 
 inline std::ostream& operator<<(std::ostream& os, HloOpcode opcode) {
   return os << HloOpcodeString(opcode);
