@@ -19,6 +19,7 @@ set(tf_cc_framework_srcs
     "${tensorflow_source_dir}/tensorflow/cc/framework/ops.h"
     "${tensorflow_source_dir}/tensorflow/cc/framework/ops.cc"
     "${tensorflow_source_dir}/tensorflow/cc/framework/scope.h"
+    "${tensorflow_source_dir}/tensorflow/cc/framework/scope_internal.h"
     "${tensorflow_source_dir}/tensorflow/cc/framework/scope.cc"
 )
 
@@ -103,6 +104,16 @@ add_library(tf_cc_ops OBJECT
     "${tensorflow_source_dir}/tensorflow/cc/ops/const_op.cc"
     "${tensorflow_source_dir}/tensorflow/cc/ops/standard_ops.h"
 )
+
+########################################################
+# tf_cc_while_loop library
+########################################################
+add_library(tf_cc_while_loop OBJECT
+    "${tensorflow_source_dir}/tensorflow/cc/ops/while_loop.h"
+    "${tensorflow_source_dir}/tensorflow/cc/ops/while_loop.cc"
+)
+
+add_dependencies(tf_cc_while_loop tf_core_framework tf_cc_ops)
 
 ########################################################
 # tf_cc library

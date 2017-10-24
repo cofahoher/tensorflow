@@ -18,6 +18,7 @@ limitations under the License.
 #include "tensorflow/compiler/xla/literal_util.h"
 #include "tensorflow/compiler/xla/service/hlo_opcode.h"
 #include "tensorflow/compiler/xla/shape_util.h"
+#include "tensorflow/core/framework/attr_value.pb.h"
 #include "tensorflow/core/framework/op.h"
 #include "tensorflow/core/framework/tensor_shape.pb.h"
 #include "tensorflow/core/lib/strings/str_util.h"
@@ -68,9 +69,8 @@ void CleanNodeName(string* name) {
 }
 
 Status HloTfGraphBuilder::AddComputation(const HloComputation& computation) {
-  LOG(INFO) << "Adding computation " << computation.name();
+  VLOG(2) << "Adding computation " << computation.name();
   for (auto embedded : computation.MakeEmbeddedComputationsList()) {
-    LOG(INFO) << "Adding embedded computation " << embedded->name();
     for (auto& instruction : embedded->instructions()) {
       TF_RETURN_IF_ERROR(AddInstruction(instruction.get()));
     }
@@ -88,12 +88,19 @@ const string& HloTfGraphBuilder::GetNodeNameForInstruction(
   if (ContainsKey(instruction_to_node_name_, instruction)) {
     return instruction_to_node_name_[instruction];
   }
+  string node_name;
   // If an instruction is fused, put it in the subgraph of the fusion;
   // otherwise, put it in the computation subgraph.
-  string node_name =
-      instruction->IsFused()
-          ? GetNodeNameForInstruction(instruction->fusion_instruction())
-          : instruction->parent()->name();
+  const HloComputation* computation = instruction->parent();
+  if (computation->IsFusionComputation()) {
+    node_name = GetNodeNameForInstruction(computation->FusionInstruction());
+  } else {
+    node_name = computation->name();
+    if (!instruction->metadata().op_name().empty()) {
+      // Always make computations contain TF ops but not the other way around.
+      StrAppend(&node_name, "/", instruction->metadata().op_name());
+    }
+  }
   string instruction_name = instruction->name();
   if (instruction->opcode() == HloOpcode::kParameter) {
     StrAppend(&instruction_name, ".", instruction->parameter_number());
@@ -120,6 +127,10 @@ void HloTfGraphBuilder::SetNodeAttrs(const HloInstruction* instruction,
   // Set the node type.
   attrs["type"].set_s(
       xla::PrimitiveType_Name(instruction->shape().element_type()));
+
+  // Set the framework op (e.g. Tensorflow op) that generated this XLA op.
+  attrs["tf_op_type"].set_s(instruction->metadata().op_type());
+  attrs["tf_op_name"].set_s(instruction->metadata().op_name());
 
   // Set the shape of the output tensor. "_output_shapes" is a special attribute
   // name used by Tensorboard for shapes of output tensors.
@@ -161,8 +172,7 @@ void HloTfGraphBuilder::SetNodeAttrs(const HloInstruction* instruction,
       break;
     case HloOpcode::kConstant:
       if (ShapeUtil::IsScalar(instruction->shape())) {
-        attrs["value"].set_s(
-            LiteralUtil::GetAsString(instruction->literal(), {}));
+        attrs["value"].set_s(instruction->literal().GetAsString({}));
       }
       break;
     case HloOpcode::kCustomCall:

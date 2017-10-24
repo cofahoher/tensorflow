@@ -31,6 +31,7 @@ from tensorflow.python.ops import gen_math_ops
 from tensorflow.python.ops import gradient_checker
 from tensorflow.python.ops import gradients_impl
 from tensorflow.python.ops import math_ops
+from tensorflow.python.ops import nn_grad  # pylint: disable=unused-import
 from tensorflow.python.ops import variables
 from tensorflow.python.platform import test
 from tensorflow.python.platform import tf_logging
@@ -69,10 +70,26 @@ def _sparsify(x, thresh=0.5, index_dtype=np.int64):
   return sparse_tensor.SparseTensor(
       indices=x_indices, values=x_values, dense_shape=x_shape), x_values
 
+def _default_tolerance(dtype):
+  """Returns a sensible default tolerance for comparing results of a given
+  type"""
+  if dtype == np.float16:
+    return 5e-3
+  elif dtype in (np.float32, np.complex64):
+    return 1e-3
+  elif dtype in (np.float64, np.complex128):
+    return 1e-5
+  else:
+    return None # Fail fast for unexpected types
+
 
 class UnaryOpTest(test.TestCase):
 
-  def _compareCpu(self, x, np_func, tf_func):
+  def _compareCpu(self, x, np_func, tf_func, grad_rtol=None, grad_atol=None):
+    if grad_rtol is None:
+      grad_rtol = _default_tolerance(x.dtype)
+    if grad_atol is None:
+      grad_atol = _default_tolerance(x.dtype)
     np_ans = np_func(x)
     with self.test_session(use_gpu=False):
       inx = ops.convert_to_tensor(x)
@@ -99,19 +116,19 @@ class UnaryOpTest(test.TestCase):
         inxf = ops.convert_to_tensor(xf)
         yf = tf_func(inxf)
         _, jacob_n = gradient_checker.compute_gradient(
-            inxf, s, yf, s, x_init_value=xf)
+            inxf, s, yf, s, x_init_value=xf, delta=1e-2)
         jacob_n = jacob_n.astype(np.float16)
-        self.assertAllClose(jacob_t, jacob_n, rtol=5e-3, atol=5e-3)
+        self.assertAllClose(jacob_t, jacob_n, rtol=grad_rtol, atol=grad_atol)
       elif x.dtype in (np.float32, np.complex64):
         s = list(np.shape(x))
         jacob_t, jacob_n = gradient_checker.compute_gradient(
-            inx, s, y, s, x_init_value=x)
-        self.assertAllClose(jacob_t, jacob_n, rtol=1e-3, atol=1e-3)
+            inx, s, y, s, x_init_value=x, delta=1e-3)
+        self.assertAllClose(jacob_t, jacob_n, rtol=grad_rtol, atol=grad_atol)
       elif x.dtype in (np.float64, np.complex128):
         s = list(np.shape(x))
         jacob_t, jacob_n = gradient_checker.compute_gradient(
-            inx, s, y, s, x_init_value=x)
-        self.assertAllClose(jacob_t, jacob_n, rtol=1e-5, atol=1e-5)
+            inx, s, y, s, x_init_value=x, delta=1e-5)
+        self.assertAllClose(jacob_t, jacob_n, rtol=grad_rtol, atol=grad_atol)
 
   def _check(self, result_tensor, result_np, input_sp_t, tol):
     self.assertTrue(isinstance(result_tensor, sparse_tensor.SparseTensor))
@@ -165,6 +182,9 @@ class UnaryOpTest(test.TestCase):
   def _sigmoid(self, x):
     return 1.0 / (1.0 + np.exp(-x))
 
+  def _log_sigmoid(self, x):
+    return np.log(self._sigmoid(x))
+
   def _replace_domain_error_with_inf(self, fn):
 
     def func(x):
@@ -180,6 +200,7 @@ class UnaryOpTest(test.TestCase):
 
   def testFloatBasic(self):
     x = np.arange(-3, 3).reshape(1, 3, 2).astype(np.float32)
+    w = x - x.min() + 1.02  # all greater than 1
     y = (x + .5).astype(np.float32)  # no zero
     z = (x + 15.5).astype(np.float32)  # all positive
     k = np.arange(-0.90, 0.90, 0.25).astype(np.float32)  # between -1 and 1
@@ -196,8 +217,14 @@ class UnaryOpTest(test.TestCase):
     self._compareBoth(x, np.expm1, math_ops.expm1)
     self._compareBoth(z, np.log, math_ops.log)
     self._compareBoth(z, np.log1p, math_ops.log1p)
+    self._compareBoth(x, np.sinh, math_ops.sinh)
+    self._compareBoth(x, np.cosh, math_ops.cosh)
     self._compareBoth(x, np.tanh, math_ops.tanh)
+    self._compareBoth(x, np.arcsinh, math_ops.asinh)
+    self._compareBoth(w, np.arccosh, math_ops.acosh)
+    self._compareBoth(k, np.arctanh, math_ops.atanh)
     self._compareBoth(x, self._sigmoid, math_ops.sigmoid)
+    self._compareBoth(x, self._log_sigmoid, math_ops.log_sigmoid)
     self._compareBoth(y, np.sign, math_ops.sign)
     self._compareBoth(x, np.sin, math_ops.sin)
     self._compareBoth(x, np.cos, math_ops.cos)
@@ -240,6 +267,9 @@ class UnaryOpTest(test.TestCase):
     self._compareBoth(x, np.expm1, math_ops.expm1)
     self._compareBoth(x, np.log, math_ops.log)
     self._compareBoth(x, np.log1p, math_ops.log1p)
+    self._compareBoth(x, np.sinh, math_ops.sinh)
+    self._compareBoth(x, np.arcsinh, math_ops.asinh)
+    self._compareBoth(x, np.cosh, math_ops.cosh)
     self._compareBoth(x, np.tanh, math_ops.tanh)
     self._compareBoth(x, self._sigmoid, math_ops.sigmoid)
     self._compareBoth(x, np.sign, math_ops.sign)
@@ -264,6 +294,7 @@ class UnaryOpTest(test.TestCase):
 
   def testDoubleBasic(self):
     x = np.arange(-3, 3).reshape(1, 3, 2).astype(np.float64)
+    w = x - x.min() + 1.02  # all greater than 1
     y = (x + .5).astype(np.float64)  # no zero
     z = (x + 15.5).astype(np.float64)  # all positive
     k = np.arange(-0.90, 0.90, 0.35).reshape(1, 3, 2).astype(
@@ -280,7 +311,12 @@ class UnaryOpTest(test.TestCase):
     self._compareBoth(x, np.expm1, math_ops.expm1)
     self._compareBoth(z, np.log, math_ops.log)
     self._compareBoth(z, np.log1p, math_ops.log1p)
+    self._compareBoth(x, np.sinh, math_ops.sinh)
+    self._compareBoth(x, np.cosh, math_ops.cosh)
     self._compareBoth(x, np.tanh, math_ops.tanh)
+    self._compareBoth(x, np.arcsinh, math_ops.asinh)
+    self._compareBoth(w, np.arccosh, math_ops.acosh)
+    self._compareBoth(k, np.arctanh, math_ops.atanh)
     self._compareBoth(x, self._sigmoid, math_ops.sigmoid)
     self._compareBoth(y, np.sign, math_ops.sign)
     self._compareBoth(x, np.sin, math_ops.sin)
@@ -371,7 +407,7 @@ class UnaryOpTest(test.TestCase):
   def testComplex64Basic(self):
     x = np.complex(1, 1) * np.arange(-3, 3).reshape(1, 3,
                                                     2).astype(np.complex64)
-    y = x + 0.5  # no zeros
+    y = x + np.complex(0.5, 0.5)  # no zeros
     self._compareBoth(x, np.abs, math_ops.abs)
     self._compareBoth(x, np.abs, _ABS)
     self._compareBoth(x, np.negative, math_ops.negative)
@@ -384,7 +420,17 @@ class UnaryOpTest(test.TestCase):
     self._compareCpu(x, np.expm1, math_ops.expm1)
     self._compareCpu(y, np.log, math_ops.log)
     self._compareCpu(y, np.log1p, math_ops.log1p)
+    self._compareCpu(x, np.sinh, math_ops.sinh)
+    self._compareCpu(x, np.cosh, math_ops.cosh)
     self._compareCpu(x, np.tanh, math_ops.tanh)
+
+    # Complex64 versions of asinh() and acosh() in libstdc++ only have 6 digits
+    # of precision.
+    # Small gradient values + low precision --> High relative error
+    self._compareCpu(y, np.arcsinh, math_ops.asinh, grad_rtol=1e-2)
+    self._compareCpu(y, np.arccosh, math_ops.acosh, grad_rtol=1e-2)
+
+    self._compareCpu(y, np.arctanh, math_ops.atanh)
     self._compareCpu(x, self._sigmoid, math_ops.sigmoid)
     self._compareCpu(x, np.sin, math_ops.sin)
     self._compareCpu(x, np.cos, math_ops.cos)
@@ -405,7 +451,7 @@ class UnaryOpTest(test.TestCase):
   def testComplex128Basic(self):
     x = np.complex(1, 1) * np.arange(-3, 3).reshape(1, 3,
                                                     2).astype(np.complex128)
-    y = x + 0.5  # no zeros
+    y = x + np.complex(0.5, 0.5)  # no zeros
     self._compareBoth(x, np.abs, math_ops.abs)
     self._compareBoth(x, np.abs, _ABS)
     self._compareBoth(x, np.negative, math_ops.negative)
@@ -418,7 +464,12 @@ class UnaryOpTest(test.TestCase):
     self._compareCpu(x, np.expm1, math_ops.expm1)
     self._compareCpu(y, np.log, math_ops.log)
     self._compareCpu(y, np.log1p, math_ops.log1p)
+    self._compareCpu(x, np.sinh, math_ops.sinh)
+    self._compareCpu(x, np.cosh, math_ops.cosh)
     self._compareCpu(x, np.tanh, math_ops.tanh)
+    self._compareCpu(y, np.arcsinh, math_ops.asinh)
+    self._compareCpu(y, np.arccosh, math_ops.acosh)
+    self._compareCpu(y, np.arctanh, math_ops.atanh)
     self._compareCpu(x, self._sigmoid, math_ops.sigmoid)
     self._compareCpu(x, np.sin, math_ops.sin)
     self._compareCpu(x, np.cos, math_ops.cos)
@@ -610,6 +661,13 @@ class BinaryOpTest(test.TestCase):
     self._compareBoth(x, y, np.multiply, _MUL)
     self._compareBoth(x, y + 0.1, np.true_divide, _TRUEDIV)
     self._compareBoth(x, y + 0.1, np.floor_divide, _FLOORDIV)
+    self._compareBoth(x, y, np.arctan2, math_ops.atan2)
+    x1 = np.random.randn(5, 6).astype(np.float32)
+    x2 = np.random.randn(5, 6).astype(np.float32)
+    # Remove tiny values--atan2 gradients are flaky near the origin.
+    x1[np.abs(x1) < 0.05] = 0.05 * np.sign(x1[np.abs(x1) < 0.05])
+    x2[np.abs(x2) < 0.05] = 0.05 * np.sign(x2[np.abs(x2) < 0.05])
+    self._compareBoth(x1, x2, np.arctan2, math_ops.atan2)
     try:
       from scipy import special  # pylint: disable=g-import-not-at-top
       a_pos_small = np.linspace(0.1, 2, 15).reshape(1, 3, 5).astype(np.float32)
@@ -667,6 +725,13 @@ class BinaryOpTest(test.TestCase):
     self._compareBoth(x, y, np.multiply, _MUL)
     self._compareBoth(x, y + 0.1, np.true_divide, _TRUEDIV)
     self._compareBoth(x, y + 0.1, np.floor_divide, _FLOORDIV)
+    self._compareBoth(x, y, np.arctan2, math_ops.atan2)
+    x1 = np.random.randn(7, 4).astype(np.float64)
+    x2 = np.random.randn(7, 4).astype(np.float64)
+    # Remove tiny values--atan2 gradients are flaky near the origin.
+    x1[np.abs(x1) < 0.5] = 0.5 * np.sign(x1[np.abs(x1) < 0.5])
+    x2[np.abs(x2) < 0.5] = 0.5 * np.sign(x2[np.abs(x2) < 0.5])
+    self._compareBoth(x1, x2, np.arctan2, math_ops.atan2)
     try:
       from scipy import special  # pylint: disable=g-import-not-at-top
       a_pos_small = np.linspace(0.1, 2, 15).reshape(1, 3, 5).astype(np.float32)
@@ -677,6 +742,11 @@ class BinaryOpTest(test.TestCase):
                         math_ops.igammac)
     except ImportError as e:
       tf_logging.warn("Cannot test special functions: %s" % str(e))
+
+  def testUint8Basic(self):
+    x = np.arange(1, 13, 2).reshape(1, 3, 2).astype(np.uint8)
+    y = np.arange(1, 7, 1).reshape(1, 3, 2).astype(np.uint8)
+    self._compareBoth(x, y, np.add, math_ops.add)
 
   def testInt8Basic(self):
     x = np.arange(1, 13, 2).reshape(1, 3, 2).astype(np.int8)
@@ -1084,6 +1154,19 @@ class BinaryOpTest(test.TestCase):
           z = math_ops.pow(x, y)
           error = gradient_checker.compute_gradient_error(y, [], z, [])
           self.assertLess(error, 2e-4)
+
+  def testAtan2SpecialValues(self):
+    x1l, x2l = zip((+0.0, +0.0), (+0.0, -0.0), (-0.0, +0.0), (-0.0, -0.0),
+                   (1.2345, float("inf")), (1.2345, -float("inf")),
+                   (-4.321, float("inf")), (-4.125, -float("inf")),
+                   (float("inf"), float("inf")), (float("inf"), -float("inf")),
+                   (-float("inf"), float("inf")), (-float("inf"),
+                                                   -float("inf")))
+    for dtype in np.float32, np.float64:
+      x1 = np.array(x1l).astype(dtype)
+      x2 = np.array(x2l).astype(dtype)
+      self._compareCpu(x1, x2, np.arctan2, math_ops.atan2)
+      self._compareGpu(x1, x2, np.arctan2, math_ops.atan2)
 
 
 class ComparisonOpTest(test.TestCase):
@@ -1868,6 +1951,33 @@ class ComplexMakeRealImagTest(test.TestCase):
     self._compareRealImag(cplx, use_gpu=False)
     self._compareRealImag(cplx, use_gpu=True)
 
+  def _compareAngle(self, cplx, use_gpu):
+    np_angle = np.angle(cplx)
+    with self.test_session(use_gpu=use_gpu) as sess:
+      inx = ops.convert_to_tensor(cplx)
+      tf_angle = math_ops.angle(inx)
+      tf_angle_val = sess.run(tf_angle)
+    self.assertAllEqual(np_angle, tf_angle_val)
+    self.assertShapeEqual(np_angle, tf_angle)
+
+  def testAngle64(self):
+    real = (np.arange(-3, 3) / 4.).reshape([1, 3, 2]).astype(np.float32)
+    imag = (np.arange(-3, 3) / 5.).reshape([1, 3, 2]).astype(np.float32)
+    cplx = real + 1j * imag
+    self._compareAngle(cplx, use_gpu=False)
+    # TODO: Enable GPU tests for angle op after resolving
+    # build failures on GPU (See #10643 for context).
+    # self._compareAngle(cplx, use_gpu=True)
+
+  def testAngle(self):
+    real = (np.arange(-3, 3) / 4.).reshape([1, 3, 2]).astype(np.float64)
+    imag = (np.arange(-3, 3) / 5.).reshape([1, 3, 2]).astype(np.float64)
+    cplx = real + 1j * imag
+    self._compareAngle(cplx, use_gpu=False)
+    # TODO: Enable GPU tests for angle op after resolving
+    # build failures on GPU (See #10643 for context).
+    # self._compareAngle(cplx, use_gpu=True)
+
   def testRealReal(self):
     for dtype in dtypes_lib.int32, dtypes_lib.int64, dtypes_lib.float32, dtypes_lib.float64:
       x = array_ops.placeholder(dtype)
@@ -1999,6 +2109,27 @@ class AccumulateTest(test.TestCase):
       with self.assertRaises(ValueError):
         tf_val = math_ops.accumulate_n([])
         tf_val.eval()
+
+  def testWrongShape(self):
+    with self.test_session():
+      with self.assertRaises(ValueError):
+        a = variables.Variable(0.2)
+        b = variables.Variable(0.1)
+        tf_val = math_ops.accumulate_n([a,b], shape=[2,2]) # Should be shape=[]
+
+  def testWrongType(self):
+    with self.test_session():
+      with self.assertRaises(TypeError):
+        a = variables.Variable(0.2, dtype=np.float32)
+        b = variables.Variable(0.1, dtype=np.float32)
+        tf_val = math_ops.accumulate_n([a,b], tensor_dtype=np.int32) 
+
+  def testWrongTypeOneInput(self):
+    # Scenario that used to trigger a bug, even when testWrongType() worked
+    with self.test_session():
+      with self.assertRaises(TypeError):
+        a = variables.Variable(0.2, dtype=np.float32)
+        tf_val = math_ops.accumulate_n([a], tensor_dtype=np.int32) 
 
 
 if __name__ == "__main__":

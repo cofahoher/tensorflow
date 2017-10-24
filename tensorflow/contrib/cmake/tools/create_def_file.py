@@ -44,7 +44,7 @@ UNDNAME = "undname.exe"
 DUMPBIN = "dumpbin.exe"
 
 # Exclude if matched
-EXCLUDE_RE = re.compile(r"deleting destructor|::internal::")
+EXCLUDE_RE = re.compile(r"RTTI|deleting destructor|::internal::")
 
 # Include if matched before exclude
 INCLUDEPRE_RE = re.compile(r"google::protobuf::internal::ExplicitlyConstructed|"
@@ -60,6 +60,7 @@ INCLUDEPRE_RE = re.compile(r"google::protobuf::internal::ExplicitlyConstructed|"
 
 # Include if matched after exclude
 INCLUDE_RE = re.compile(r"^(TF_\w*)$|"
+                        r"^(TFE_\w*)$|"
                         r"tensorflow::|"
                         r"functor::|"
                         r"perftools::gputools")
@@ -141,17 +142,17 @@ def main():
           continue
         if not INCLUDE_RE.search(line):
           continue
-          
+
       if "deleting destructor" in line:
         # Some of the symbols convered by INCLUDEPRE_RE export deleting
         # destructor symbols, which is a bad idea.
         # So we filter out such symbols here.
         continue
-          
+
       if DATA_EXCLUDE_RE.search(line):
         def_fp.write("\t" + decorated + "\n")
       else:
-        def_fp.write("\t" + decorated + " DATA\n")      
+        def_fp.write("\t" + decorated + " DATA\n")
       taken.add(decorated)
   exit_code = proc.wait()
   if exit_code != 0:

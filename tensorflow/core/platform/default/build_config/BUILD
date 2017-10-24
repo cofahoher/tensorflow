@@ -17,7 +17,7 @@ cc_library(
     testonly = 1,
     copts = tf_copts(),
     deps = [
-        "//external:gtest",
+        "@com_google_googletest//:gtest",
     ],
 )
 
@@ -56,6 +56,22 @@ cc_library(
     deps = [
         "//tensorflow/stream_executor",
     ],
+)
+
+# Dummy stream executor cuda plugins.
+cc_library(
+    name = "cublas_plugin",
+    srcs = [],
+)
+
+cc_library(
+    name = "cufft_plugin",
+    srcs = [],
+)
+
+cc_library(
+    name = "cudnn_plugin",
+    srcs = [],
 )
 
 # OSX framework for device driver access
@@ -171,8 +187,14 @@ cc_library(
 )
 
 filegroup(
-    name = "android_srcs",
+    name = "mobile_srcs",
     srcs = glob(["*.h"]),
+    visibility = ["//visibility:public"],
+)
+
+alias(
+    name = "android_srcs",
+    actual = ":mobile_srcs",
     visibility = ["//visibility:public"],
 )
 

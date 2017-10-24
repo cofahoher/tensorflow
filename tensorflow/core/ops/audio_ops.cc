@@ -33,7 +33,7 @@ Status DecodeWavShapeFn(InferenceContext* c) {
   DimensionHandle channels_dim;
   int32 desired_channels;
   TF_RETURN_IF_ERROR(c->GetAttr("desired_channels", &desired_channels));
-  if (desired_channels == 0) {
+  if (desired_channels == -1) {
     channels_dim = c->UnknownDim();
   } else {
     if (desired_channels < 0) {
@@ -45,7 +45,7 @@ Status DecodeWavShapeFn(InferenceContext* c) {
   DimensionHandle samples_dim;
   int32 desired_samples;
   TF_RETURN_IF_ERROR(c->GetAttr("desired_samples", &desired_samples));
-  if (desired_samples == 0) {
+  if (desired_samples == -1) {
     samples_dim = c->UnknownDim();
   } else {
     if (desired_samples < 0) {
@@ -62,7 +62,7 @@ Status DecodeWavShapeFn(InferenceContext* c) {
 Status EncodeWavShapeFn(InferenceContext* c) {
   ShapeHandle unused;
   TF_RETURN_IF_ERROR(c->WithRank(c->input(0), 2, &unused));
-  TF_RETURN_IF_ERROR(c->WithRank(c->input(1), 1, &unused));
+  TF_RETURN_IF_ERROR(c->WithRank(c->input(1), 0, &unused));
   c->set_output(0, c->Scalar());
   return Status::OK();
 }
@@ -75,8 +75,8 @@ Status SpectrogramShapeFn(InferenceContext* c) {
   int32 stride;
   TF_RETURN_IF_ERROR(c->GetAttr("stride", &stride));
 
-  DimensionHandle input_channels = c->Dim(input, 0);
-  DimensionHandle input_length = c->Dim(input, 1);
+  DimensionHandle input_length = c->Dim(input, 0);
+  DimensionHandle input_channels = c->Dim(input, 1);
 
   DimensionHandle output_length;
   if (!c->ValueKnown(input_length)) {
@@ -97,6 +97,26 @@ Status SpectrogramShapeFn(InferenceContext* c) {
       c->MakeDim(1 + NextPowerOfTwo(window_size) / 2);
   c->set_output(0,
                 c->MakeShape({input_channels, output_length, output_channels}));
+  return Status::OK();
+}
+
+Status MfccShapeFn(InferenceContext* c) {
+  ShapeHandle spectrogram;
+  TF_RETURN_IF_ERROR(c->WithRank(c->input(0), 3, &spectrogram));
+  ShapeHandle unused;
+  TF_RETURN_IF_ERROR(c->WithRank(c->input(1), 0, &unused));
+
+  int32 dct_coefficient_count;
+  TF_RETURN_IF_ERROR(
+      c->GetAttr("dct_coefficient_count", &dct_coefficient_count));
+
+  DimensionHandle spectrogram_channels = c->Dim(spectrogram, 0);
+  DimensionHandle spectrogram_length = c->Dim(spectrogram, 1);
+
+  DimensionHandle output_channels = c->MakeDim(dct_coefficient_count);
+
+  c->set_output(0, c->MakeShape({spectrogram_channels, spectrogram_length,
+                                 output_channels}));
   return Status::OK();
 }
 
@@ -198,6 +218,36 @@ stride: How widely apart the center of adjacent sample windows should be.
 magnitude_squared: Whether to return the squared magnitude or just the
   magnitude. Using squared magnitude can avoid extra calculations.
 spectrogram: 3D representation of the audio frequencies as an image.
+)doc");
+
+REGISTER_OP("Mfcc")
+    .Input("spectrogram: float")
+    .Input("sample_rate: int32")
+    .Attr("upper_frequency_limit: float = 4000")
+    .Attr("lower_frequency_limit: float = 20")
+    .Attr("filterbank_channel_count: int = 40")
+    .Attr("dct_coefficient_count: int = 13")
+    .Output("output: float")
+    .SetShapeFn(MfccShapeFn)
+    .Doc(R"doc(
+Transforms a spectrogram into a form that's useful for speech recognition.
+
+Mel Frequency Cepstral Coefficients are a way of representing audio data that's
+been effective as an input feature for machine learning. They are created by
+taking the spectrum of a spectrogram (a 'cepstrum'), and discarding some of the
+higher frequencies that are less significant to the human ear. They have a long
+history in the speech recognition world, and https://en.wikipedia.org/wiki/Mel-frequency_cepstrum
+is a good resource to learn more.
+
+spectrogram: Typically produced by the Spectrogram op, with magnitude_squared
+  set to true.
+sample_rate: How many samples per second the source audio used.
+upper_frequency_limit: The highest frequency to use when calculating the
+  ceptstrum.
+lower_frequency_limit: The lowest frequency to use when calculating the
+  ceptstrum.
+filterbank_channel_count: Resolution of the Mel bank used internally.
+dct_coefficient_count: How many output channels to produce per time slice.
 )doc");
 
 }  // namespace tensorflow

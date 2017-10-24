@@ -23,6 +23,7 @@ import numpy as np
 from google.protobuf import text_format
 
 from tensorflow.core.framework import graph_pb2
+from tensorflow.core.framework import tensor_pb2
 from tensorflow.python.framework import constant_op
 from tensorflow.python.framework import dtypes as dtypes_lib
 from tensorflow.python.framework import errors_impl
@@ -31,6 +32,7 @@ from tensorflow.python.framework import ops
 from tensorflow.python.framework import tensor_shape
 from tensorflow.python.ops import array_ops
 from tensorflow.python.ops import gradient_checker
+from tensorflow.python.ops import logging_ops
 from tensorflow.python.ops import math_ops
 from tensorflow.python.platform import test
 from tensorflow.python.util import compat
@@ -107,6 +109,36 @@ class ConstantTest(test.TestCase):
         np.array([compat.as_bytes(str(x)) for x in np.arange(-15, 15)]).reshape(
             [2, 3, 5]))
     self._testCpu(np.empty((2, 0, 5)).astype(np.str_))
+
+  def testVariant(self):
+    # TODO(ebrevdo): Re-enable use_gpu=True once non-DMA Variant
+    # copying between CPU and GPU is supported.
+    with self.test_session(use_gpu=False):
+      variant_tensor = tensor_pb2.TensorProto(
+          dtype=dtypes_lib.variant.as_datatype_enum,
+          tensor_shape=tensor_shape.TensorShape([]).as_proto(),
+          variant_val=[
+              tensor_pb2.VariantTensorDataProto(
+                  # Match registration in variant_op_registry.cc
+                  type_name=b"int",
+                  metadata=np.array(1, dtype=np.int32).tobytes())
+          ])
+      const = constant_op.constant(variant_tensor)
+      const_value = const.op.get_attr("value")
+
+      # Ensure we stored the tensor proto properly.
+      self.assertProtoEquals(variant_tensor, const_value)
+
+      # Smoke test -- ensure this executes without trouble.
+      # Right now, non-numpy-compatible objects cannot be returned from a
+      # session.run call; similarly, objects that can't be converted to
+      # native numpy types cannot be passed to ops.convert_to_tensor.
+      # TODO(ebrevdo): Add registration mechanism for
+      # ops.convert_to_tensor and for session.run output.
+      logging_const_op = logging_ops.Print(
+          const, [const],
+          message="Variant storing an int, decoded const value:").op
+      logging_const_op.run()
 
   def testStringWithNulls(self):
     with self.test_session():
@@ -230,6 +262,29 @@ class AsTensorTest(test.TestCase):
       self.assertEqual(dtypes_lib.int32, x.dtype)
       self.assertAllEqual([1, 2, 3], x.eval())
 
+      x = ops.convert_to_tensor(tensor_shape.TensorShape([2**31-1, 2, 3]))
+      self.assertEqual(dtypes_lib.int32, x.dtype)
+      self.assertAllEqual([2**31-1, 2, 3], x.eval())
+
+      x = ops.convert_to_tensor(tensor_shape.TensorShape([2**31-1, 2, 3]),
+                                dtype=dtypes_lib.int32)
+      self.assertEqual(dtypes_lib.int32, x.dtype)
+      self.assertAllEqual([2**31-1, 2, 3], x.eval())
+
+      x = ops.convert_to_tensor(tensor_shape.TensorShape([2**31, 2, 3]))
+      self.assertEqual(dtypes_lib.int64, x.dtype)
+      self.assertAllEqual([2**31, 2, 3], x.eval())
+
+      x = ops.convert_to_tensor(tensor_shape.TensorShape([2**31, 2, 3]),
+                                dtype=dtypes_lib.int64)
+      self.assertEqual(dtypes_lib.int64, x.dtype)
+      self.assertAllEqual([2**31, 2, 3], x.eval())
+
+      with self.assertRaisesRegexp(
+          ValueError, "a dimension is too large .2147483648."):
+        x = ops.convert_to_tensor(tensor_shape.TensorShape([2**31, 2, 3]),
+                                  dtype=dtypes_lib.int32)
+
       x = ops.convert_to_tensor(
           tensor_shape.TensorShape([1, 2, 3]), dtype=dtypes_lib.int64)
       self.assertEqual(dtypes_lib.int64, x.dtype)
@@ -350,7 +405,7 @@ class ZerosTest(test.TestCase):
 
 class ZerosLikeTest(test.TestCase):
 
-  def _compareZeros(self, dtype, use_gpu):
+  def _compareZeros(self, dtype, fully_defined_shape, use_gpu):
     with self.test_session(use_gpu=use_gpu):
       # Creates a tensor of non-zero values with shape 2 x 3.
       # NOTE(kearnes): The default numpy dtype associated with tf.string is
@@ -361,16 +416,24 @@ class ZerosLikeTest(test.TestCase):
         numpy_dtype = np.string_
       else:
         numpy_dtype = dtype.as_numpy_dtype
-      d = constant_op.constant(np.ones((2, 3), dtype=numpy_dtype), dtype=dtype)
+      if fully_defined_shape:
+        d = constant_op.constant(
+            np.ones((2, 3), dtype=numpy_dtype), dtype=dtype)
+      else:
+        d = array_ops.placeholder(dtype=dtype)
       # Constructs a tensor of zeros of the same dimensions and type as "d".
       z_var = array_ops.zeros_like(d)
       # Test that the type is correct
       self.assertEqual(z_var.dtype, dtype)
       # Test that the shape is correct
-      self.assertEqual([2, 3], z_var.get_shape())
+      if fully_defined_shape:
+        self.assertEqual([2, 3], z_var.get_shape())
 
       # Test that the value is correct
-      z_value = z_var.eval()
+      feed_dict = {}
+      if not fully_defined_shape:
+        feed_dict[d] = np.ones((2, 3), dtype=numpy_dtype)
+      z_value = z_var.eval(feed_dict=feed_dict)
       self.assertFalse(np.any(z_value))
       self.assertEqual((2, 3), z_value.shape)
 
@@ -381,14 +444,16 @@ class ZerosLikeTest(test.TestCase):
         dtypes_lib.complex64, dtypes_lib.complex128, dtypes_lib.int64,
         dtypes_lib.string
     ]:
-      self._compareZeros(dtype, False)
+      self._compareZeros(dtype, fully_defined_shape=False, use_gpu=False)
+      self._compareZeros(dtype, fully_defined_shape=True, use_gpu=False)
 
   def testZerosLikeGPU(self):
     for dtype in [
         dtypes_lib.float32, dtypes_lib.float64, dtypes_lib.int32,
         dtypes_lib.bool, dtypes_lib.int64, dtypes_lib.string
     ]:
-      self._compareZeros(dtype, True)
+      self._compareZeros(dtype, fully_defined_shape=False, use_gpu=True)
+      self._compareZeros(dtype, fully_defined_shape=True, use_gpu=True)
 
   def testZerosLikePartialShape(self):
     d = array_ops.placeholder(dtypes_lib.float32, shape=[None, 4, None])
@@ -407,6 +472,35 @@ class ZerosLikeTest(test.TestCase):
           self.assertEqual(y.dtype, out_type)
           self.assertEqual(y.shape, shape)
           self.assertAllEqual(y, np.zeros(shape, dtype=out_type))
+
+  def testZerosLikeVariant(self):
+    # TODO(ebrevdo): Re-enable use_gpu=True once non-DMA Variant
+    # copying between CPU and GPU is supported AND we register a
+    # ZerosLike callback for GPU for Variant storing primitive types
+    # in variant_op_registry.cc.
+    with self.test_session(use_gpu=False):
+      variant_tensor = tensor_pb2.TensorProto(
+          dtype=dtypes_lib.variant.as_datatype_enum,
+          tensor_shape=tensor_shape.TensorShape([]).as_proto(),
+          variant_val=[
+              tensor_pb2.VariantTensorDataProto(
+                  # Match registration in variant_op_registry.cc
+                  type_name=b"int",
+                  metadata=np.array(1, dtype=np.int32).tobytes())
+          ])
+      const_variant = constant_op.constant(variant_tensor)
+      zeros_like = array_ops.zeros_like(const_variant)
+      zeros_like_op = logging_ops.Print(
+          zeros_like, [const_variant, zeros_like],
+          message="Variant storing an int, input and output of zeros_like:").op
+
+      # Smoke test -- ensure this executes without trouble.
+      # Right now, non-numpy-compatible objects cannot be returned from a
+      # session.run call; similarly, objects that can't be converted to
+      # native numpy types cannot be passed to ops.convert_to_tensor.
+      # TODO(ebrevdo): Add registration mechanism for
+      # ops.convert_to_tensor and for session.run output.
+      zeros_like_op.run()
 
 
 class OnesTest(test.TestCase):
@@ -650,6 +744,16 @@ class PlaceholderTest(test.TestCase):
       with self.assertRaisesWithPredicateMatch(
           ValueError, lambda e: "Cannot feed value of shape" in str(e)):
         p_identity.eval(feed_dict={p: feed_array[:5, :2]})
+
+  def testPartialShapeWhenNotFed(self):
+    with self.test_session():
+      p = array_ops.placeholder(dtypes_lib.float32, shape=[None, 3], name="p")
+      p_identity = array_ops.identity(p)
+
+      # Should trigger an operator error, not a shape error.
+      with self.assertRaisesOpError(
+          "must feed a value for placeholder tensor 'p' with dtype float"):
+        p_identity.eval()
 
   def testControlDependency(self):
     with self.test_session():
